@@ -70,9 +70,14 @@ readonly class SmtpMailer implements MailerInterface
     private function extractFromAddress(
         string $raw,
     ): string {
-        // Extract the From header from the raw message
-        if (preg_match('/^From:\s*<?([^<>\r\n]+@[^<>\r\n]+)>?/mi', $raw, $matches)) {
-            return trim($matches[1]);
+        // Prefer the angle-bracket address, so a display name (RFC 2047 encoded or not) is skipped
+        if (preg_match('/^From:[^\r\n]*<([^<>\s]+@[^<>\s]+)>/mi', $raw, $matches)) {
+            return $matches[1];
+        }
+
+        // Bare address without a display name
+        if (preg_match('/^From:\s*([^<>\s]+@[^<>\s]+)/mi', $raw, $matches)) {
+            return $matches[1];
         }
 
         // Default fallback
@@ -136,7 +141,8 @@ readonly class SmtpMailer implements MailerInterface
             $alternativeBoundary,
         );
 
-        return $headers . "\r\n" . $body;
+        // RFC 5322 section 2.1: an empty line separates the header section from the body
+        return $headers . "\r\n\r\n" . $body;
     }
 
     /**
@@ -156,35 +162,27 @@ readonly class SmtpMailer implements MailerInterface
         // From
         $from = $message->from;
         if ($from !== null) {
-            $fromLine = 'From: ' . $from->toString();
-            $this->assertNoCrlf('From header', $fromLine);
-            $headers[] = $fromLine;
+            $headers[] = 'From: ' . $this->formatAddress('From header', $from);
         }
 
         // To
         $toAddresses = $message->to;
         if ($toAddresses !== []) {
-            $to = array_map(fn (Address $addr) => $addr->toString(), $toAddresses);
-            $toLine = 'To: ' . implode(', ', $to);
-            $this->assertNoCrlf('To header', $toLine);
-            $headers[] = $toLine;
+            $to = array_map(fn (Address $addr) => $this->formatAddress('To header', $addr), $toAddresses);
+            $headers[] = 'To: ' . implode(', ', $to);
         }
 
         // Cc
         $ccAddresses = $message->cc;
         if ($ccAddresses !== []) {
-            $cc = array_map(fn (Address $addr) => $addr->toString(), $ccAddresses);
-            $ccLine = 'Cc: ' . implode(', ', $cc);
-            $this->assertNoCrlf('Cc header', $ccLine);
-            $headers[] = $ccLine;
+            $cc = array_map(fn (Address $addr) => $this->formatAddress('Cc header', $addr), $ccAddresses);
+            $headers[] = 'Cc: ' . implode(', ', $cc);
         }
 
         // Reply-To
         $replyTo = $message->replyTo;
         if ($replyTo !== null) {
-            $replyToLine = 'Reply-To: ' . $replyTo->toString();
-            $this->assertNoCrlf('Reply-To header', $replyToLine);
-            $headers[] = $replyToLine;
+            $headers[] = 'Reply-To: ' . $this->formatAddress('Reply-To header', $replyTo);
         }
 
         // Subject
@@ -431,6 +429,26 @@ readonly class SmtpMailer implements MailerInterface
         if (str_contains($value, "\r") || str_contains($value, "\n") || str_contains($value, "\x00")) {
             throw SmtpMessageException::headerInjection($field, $value);
         }
+    }
+
+    /**
+     * Format an address for a header, RFC 2047 encoding a non-ASCII display name.
+     *
+     * The injection check runs on the raw value, since encoding would otherwise hide a CR or LF.
+     *
+     * @throws SmtpMessageException
+     */
+    private function formatAddress(
+        string $field,
+        Address $address,
+    ): string {
+        $this->assertNoCrlf($field, $address->toString());
+
+        if ($address->name === null) {
+            return $address->email;
+        }
+
+        return sprintf('%s <%s>', $this->encodeHeader($address->name), $address->email);
     }
 
     private function encodeHeader(

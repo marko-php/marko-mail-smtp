@@ -709,6 +709,117 @@ test('SmtpMailer sendRaw sends pre-formatted message', function (): void {
         ->and($writtenString)->toContain('This is a raw email body.');
 });
 
+/**
+ * @return string The DATA payload the mailer wrote, without the terminating dot line
+ */
+function sentDataPayload(Message $message): string
+{
+    $recipients = count($message->to) + count($message->cc) + count($message->bcc);
+
+    $socket = new SmtpMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '250 OK', // MAIL FROM
+        ...array_fill(0, $recipients, '250 OK'), // one RCPT TO per recipient
+        '354 Start mail input', // DATA
+        '250 OK', // End of DATA
+    ]);
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+
+    new SmtpMailer($transport)->send($message);
+
+    $written = $socket->written;
+    $payload = (string) end($written);
+
+    return substr($payload, 0, -strlen("\r\n.\r\n"));
+}
+
+it(
+    'separates the header section from the body with an empty line',
+    function (Message $message, string $bodyStart): void {
+        [$headerSection, $body] = explode("\r\n\r\n", sentDataPayload($message), 2) + ['', ''];
+    
+        expect($headerSection)->toStartWith('From: ')
+            ->and($headerSection)->toContain('MIME-Version: 1.0')
+            ->and($headerSection)->not->toContain('--=_Part_')
+            ->and($body)->toStartWith($bodyStart);
+    }
+)->with([
+    'plain text' => [
+        fn (): Message => Message::create()->from('sender@example.com')->to('recipient@example.com')->subject(
+            'Hi'
+        )->text(
+            'Hello'
+        ),
+        'Hello',
+    ],
+    'multipart alternative' => [
+        fn (): Message => Message::create()->from('sender@example.com')->to('recipient@example.com')->subject(
+            'Hi'
+        )->text(
+            'Hello'
+        )->html(
+            '<p>Hello</p>'
+        ),
+        '--=_Part_',
+    ],
+]);
+
+it('RFC-2047 encodes non-ASCII display names in address headers', function (): void {
+    $payload = sentDataPayload(
+        Message::create()
+            ->from('sender@example.com', 'Rémy')
+            ->to('recipient@example.com', 'Jürg Müller')
+            ->cc('copy@example.com', 'Zoë')
+            ->replyTo('reply@example.com', 'Ånne')
+            ->subject('Hi')
+            ->text('Hello'),
+    );
+
+    $encoded = fn (string $name): string => '=?UTF-8?B?' . base64_encode($name) . '?=';
+
+    expect($payload)->toContain('From: ' . $encoded('Rémy') . ' <sender@example.com>')
+        ->and($payload)->toContain('To: ' . $encoded('Jürg Müller') . ' <recipient@example.com>')
+        ->and($payload)->toContain('Cc: ' . $encoded('Zoë') . ' <copy@example.com>')
+        ->and($payload)->toContain('Reply-To: ' . $encoded('Ånne') . ' <reply@example.com>');
+});
+
+it('keeps ASCII display names readable in address headers', function (): void {
+    expect(
+        sentDataPayload(
+            Message::create()->from('sender@example.com', 'Sender')->to('recipient@example.com')->subject('Hi')->text(
+                'Hello'
+            )
+        )
+    )
+        ->toContain('From: Sender <sender@example.com>');
+});
+
+it(
+    'takes the envelope sender of a raw message from the angle brackets when the display name is encoded',
+    function (): void {
+        $socket = new SmtpMockSocket([
+            '220 smtp.example.com ESMTP ready',
+            '250 OK', // MAIL FROM
+        '250 OK', // RCPT TO
+        '354 Start mail input', // DATA
+        '250 OK', // End of DATA
+    ]);
+        $transport = new SmtpTransport($socket);
+        $transport->connect('smtp.example.com', 587);
+    
+        $rawMessage = 'From: =?UTF-8?B?' . base64_encode('Rémy') . "?= <sender@example.com>\r\n";
+        $rawMessage .= "To: recipient@example.com\r\n";
+        $rawMessage .= "Subject: Raw Email\r\n";
+        $rawMessage .= "\r\n";
+        $rawMessage .= 'Body';
+    
+        new SmtpMailer($transport)->sendRaw('recipient@example.com', $rawMessage);
+    
+        expect(implode('', $socket->written))->toContain("MAIL FROM:<sender@example.com>\r\n");
+    }
+);
+
 it(
     'joins headers with CRLF only between distinct headers (no injected CRLF inside a single header)',
     function (): void {
