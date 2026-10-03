@@ -24,8 +24,9 @@ class StreamSocket implements SocketInterface
         ?string $encryption = null,
         int $timeout = 30,
     ): void {
+        // 'tls' means STARTTLS: connect in plain text, SmtpMailerFactory upgrades the connection afterwards
         $transport = match ($encryption) {
-            'ssl', 'tls' => 'ssl',
+            'ssl' => 'ssl',
             default => 'tcp',
         };
 
@@ -97,7 +98,7 @@ class StreamSocket implements SocketInterface
         }
 
         $result = stream_socket_enable_crypto(
-            socket: $this->stream,
+            stream: $this->stream,
             enable: true,
             crypto_method: STREAM_CRYPTO_METHOD_TLS_CLIENT,
         );
