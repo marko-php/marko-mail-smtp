@@ -67,12 +67,68 @@ it('writes raw bytes to the stream verbatim', function (): void {
     expect($written)->toBe("EHLO client.example.com\r\n");
 });
 
-it('throws a loud TransportException when the connection cannot be established', function (): void {
+it('throws a loud TransportException with the OS reason when the connection cannot be established', function (): void {
+    // Bind an ephemeral port and close it again, so nothing is listening there
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+    [, $port] = explode(':', stream_socket_get_name($server, false));
+    fclose($server);
+
     $socket = new StreamSocket();
 
-    // Connect to a port that is not listening (likely no service on port 1)
-    expect(fn () => $socket->connect('127.0.0.1', 1))
-        ->toThrow(TransportException::class);
+    $warnings = [];
+    set_error_handler(function (int $errno, string $message) use (&$warnings): bool {
+        $warnings[] = $message;
+
+        return true;
+    });
+
+    try {
+        $socket->connect('127.0.0.1', (int) $port);
+        $this->fail('Expected TransportException');
+    } catch (TransportException $e) {
+        expect($e->getContext())->toBe("Could not establish connection to 127.0.0.1:$port (Connection refused)");
+    } finally {
+        restore_error_handler();
+    }
+
+    expect($warnings)->toBeEmpty();
+});
+
+it('throws tlsFailed with the handshake reason and raises no PHP warning when STARTTLS fails', function (): void {
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+    expect($server)->not->toBeFalse();
+
+    [, $port] = explode(':', stream_socket_get_name($server, false));
+
+    $socket = new StreamSocket();
+    $socket->connect('127.0.0.1', (int) $port);
+
+    // The "server" answers the TLS ClientHello with plain text, so the handshake fails
+    $connection = stream_socket_accept($server, 2);
+    fwrite($connection, str_repeat("220 this is not TLS\r\n", 20));
+    fclose($connection);
+
+    $warnings = [];
+    set_error_handler(function (int $errno, string $message) use (&$warnings): bool {
+        $warnings[] = $message;
+
+        return true;
+    });
+
+    try {
+        $socket->enableTls();
+        $this->fail('Expected TransportException');
+    } catch (TransportException $e) {
+        expect($e->getMessage())->toBe('TLS negotiation failed.')
+            ->and($e->getContext())->toStartWith('Could not establish secure connection to 127.0.0.1 (')
+            ->and($e->getContext())->toContain('SSL operation failed');
+    } finally {
+        restore_error_handler();
+        $socket->close();
+        fclose($server);
+    }
+
+    expect($warnings)->toBeEmpty();
 });
 
 it('reports $connected as false before connect and after close, and true while the stream is open', function (): void {
