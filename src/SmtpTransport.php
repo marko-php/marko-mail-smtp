@@ -109,6 +109,7 @@ class SmtpTransport
     public function mailFrom(
         string $address,
     ): void {
+        $this->assertSafeEnvelopeAddress('MAIL FROM', $address);
         $this->socket->write("MAIL FROM:<$address>\r\n");
         $response = $this->socket->read();
         $this->expectSuccess($response);
@@ -120,9 +121,25 @@ class SmtpTransport
     public function rcptTo(
         string $address,
     ): void {
+        $this->assertSafeEnvelopeAddress('RCPT TO', $address);
         $this->socket->write("RCPT TO:<$address>\r\n");
         $response = $this->socket->read();
         $this->expectSuccess($response);
+    }
+
+    /**
+     * Defence in depth: refuse a CR, LF or NUL byte in an envelope address, which would let the
+     * caller end the command line and inject further SMTP commands or recipients.
+     *
+     * @throws TransportException
+     */
+    private function assertSafeEnvelopeAddress(
+        string $command,
+        string $address,
+    ): void {
+        if (str_contains($address, "\r") || str_contains($address, "\n") || str_contains($address, "\x00")) {
+            throw TransportException::commandInjection($command, $address);
+        }
     }
 
     /**

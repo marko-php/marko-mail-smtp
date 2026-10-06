@@ -1086,3 +1086,62 @@ it('encodes an inline attachment filename the same way as a regular one', functi
         unlink($tempImage);
     }
 });
+
+it('renders a display name holding an address list as a single quoted display name', function (): void {
+    $payload = sentDataPayload(
+        Message::create()
+            ->from('sender@example.com', 'Sender')
+            ->to('real@example.com', 'Real')
+            ->replyTo('reply@example.com', 'x <attacker@evil.com>, y')
+            ->subject('Hi')
+            ->text('Hello'),
+    );
+
+    expect($payload)->toContain("\r\nReply-To: \"x <attacker@evil.com>, y\" <reply@example.com>\r\n");
+});
+
+it('quotes ASCII display names containing specials in every address header', function (): void {
+    $payload = sentDataPayload(
+        Message::create()
+            ->from('sender@example.com', 'Doe, John')
+            ->to('recipient@example.com', 'Team "A"')
+            ->cc('copy@example.com', 'back\\slash')
+            ->subject('Hi')
+            ->text('Hello'),
+    );
+
+    expect($payload)->toContain('From: "Doe, John" <sender@example.com>')
+        ->and($payload)->toContain('To: "Team \"A\"" <recipient@example.com>')
+        ->and($payload)->toContain('Cc: "back\\\\slash" <copy@example.com>');
+});
+
+it('rejects a sendRaw recipient containing CRLF before writing to the socket', function (): void {
+    $socket = new SmtpMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '250 OK',
+        '250 OK',
+    ]);
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+
+    $mailer = new SmtpMailer($transport);
+    $rawMessage = "From: sender@example.com\r\nSubject: Raw\r\n\r\nBody";
+
+    expect(fn () => $mailer->sendRaw("a@x.com>\r\nRCPT TO:<victim@y.com", $rawMessage))
+        ->toThrow(SmtpMessageException::class)
+        ->and($socket->written)->toBe([]);
+});
+
+it('rejects an invalid sendRaw recipient address before writing to the socket', function (): void {
+    $socket = new SmtpMockSocket([
+        '220 smtp.example.com ESMTP ready',
+    ]);
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+
+    $mailer = new SmtpMailer($transport);
+
+    expect(fn () => $mailer->sendRaw('not-an-email', "From: a@b.com\r\n\r\nBody"))
+        ->toThrow(SmtpMessageException::class, "Invalid email address: 'not-an-email'")
+        ->and($socket->written)->toBe([]);
+});

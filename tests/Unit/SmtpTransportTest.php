@@ -507,3 +507,41 @@ it('dot-stuffs a line that follows a bare CR', function (): void {
 
     expect($socket->written[1])->toBe("body\r\n..hidden\r\n.\r\n");
 });
+
+it('rejects CR, LF or NUL in a MAIL FROM address before writing the command', function (string $address): void {
+    $socket = createMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '250 OK',
+    ]);
+
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+
+    expect(fn () => $transport->mailFrom($address))
+        ->toThrow(TransportException::class, 'SMTP command injection attempt detected in MAIL FROM address.')
+        ->and($socket->written)->toBe([]);
+})->with([
+    'CRLF' => ["a@x.com>\r\nRCPT TO:<victim@y.com"],
+    'bare LF' => ["a@x.com\nRSET"],
+    'bare CR' => ["a@x.com\rRSET"],
+    'NUL' => ["a@x.com\x00"],
+]);
+
+it('rejects CR, LF or NUL in a RCPT TO address before writing the command', function (string $address): void {
+    $socket = createMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '250 OK',
+    ]);
+
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+
+    expect(fn () => $transport->rcptTo($address))
+        ->toThrow(TransportException::class, 'SMTP command injection attempt detected in RCPT TO address.')
+        ->and($socket->written)->toBe([]);
+})->with([
+    'CRLF' => ["a@x.com>\r\nRCPT TO:<victim@y.com"],
+    'bare LF' => ["a@x.com\nDATA"],
+    'bare CR' => ["a@x.com\rDATA"],
+    'NUL' => ["a@x.com\x00"],
+]);

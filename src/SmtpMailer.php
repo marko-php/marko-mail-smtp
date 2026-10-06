@@ -48,18 +48,22 @@ readonly class SmtpMailer implements MailerInterface
     }
 
     /**
-     * @throws TransportException
+     * @throws SmtpMessageException|TransportException
      */
     public function sendRaw(
         string $to,
         string $raw,
     ): bool {
+        // Validate the recipient before anything reaches the socket, so a CR/LF or ">" cannot
+        // smuggle extra SMTP commands or recipients into the envelope
+        $recipient = new Address($to);
+
         // Extract sender from raw message
         $from = $this->extractFromAddress($raw);
 
         // Send envelope
         $this->transport->mailFrom($from);
-        $this->transport->rcptTo($to);
+        $this->transport->rcptTo($recipient->email);
 
         // Send raw message as-is
         $this->transport->data($raw);
@@ -449,9 +453,11 @@ readonly class SmtpMailer implements MailerInterface
     }
 
     /**
-     * Format an address for a header, RFC 2047 encoding a non-ASCII display name.
+     * Format an address for a header.
      *
-     * The injection check runs on the raw value, since encoding would otherwise hide a CR or LF.
+     * A non-ASCII display name is RFC 2047 encoded. An ASCII one is rendered by Address, which
+     * wraps it in a quoted-string when it contains RFC 5322 specials. The injection check runs on
+     * the raw value, since encoding would otherwise hide a CR or LF.
      *
      * @throws SmtpMessageException
      */
@@ -465,7 +471,11 @@ readonly class SmtpMailer implements MailerInterface
             return $address->email;
         }
 
-        return sprintf('%s <%s>', $this->encodeHeader($address->name), $address->email);
+        if (preg_match('/[^\x20-\x7E]/', $address->name)) {
+            return sprintf('%s <%s>', $this->encodeHeader($address->name), $address->email);
+        }
+
+        return $address->toString();
     }
 
     private function encodeHeader(
