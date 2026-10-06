@@ -327,7 +327,7 @@ readonly class SmtpMailer implements MailerInterface
             $body[] = "--$mixedBoundary";
             $body[] = "Content-Type: $attachment->mimeType";
             $body[] = 'Content-Transfer-Encoding: base64';
-            $body[] = "Content-Disposition: attachment; filename=\"$attachment->name\"";
+            $body[] = 'Content-Disposition: attachment; ' . $this->formatFilenameParameter($attachment->name);
             $body[] = '';
             $body[] = chunk_split(base64_encode($attachment->content));
         }
@@ -370,7 +370,7 @@ readonly class SmtpMailer implements MailerInterface
             $body[] = "Content-Type: $attachment->mimeType";
             $body[] = 'Content-Transfer-Encoding: base64';
             $body[] = "Content-ID: <$attachment->contentId>";
-            $body[] = "Content-Disposition: inline; filename=\"$attachment->name\"";
+            $body[] = 'Content-Disposition: inline; ' . $this->formatFilenameParameter($attachment->name);
             $body[] = '';
             $body[] = chunk_split(base64_encode($attachment->content));
         }
@@ -409,6 +409,23 @@ readonly class SmtpMailer implements MailerInterface
         $body[] = "--$boundary--";
 
         return implode("\r\n", $body);
+    }
+
+    /**
+     * Render the Content-Disposition filename parameter.
+     *
+     * A printable-ASCII name is sent as an RFC 2045 quoted-string with `"` and `\` escaped. Anything
+     * else (non-ASCII or control characters) is percent-encoded per RFC 2231, so no raw byte from
+     * the name can break out of the parameter or the header.
+     */
+    private function formatFilenameParameter(
+        string $name,
+    ): string {
+        if (!preg_match('/[^\x20-\x7E]/', $name)) {
+            return 'filename="' . addcslashes($name, '"\\') . '"';
+        }
+
+        return "filename*=UTF-8''" . rawurlencode($name);
     }
 
     /**

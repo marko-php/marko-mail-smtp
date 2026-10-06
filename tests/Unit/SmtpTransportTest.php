@@ -454,3 +454,56 @@ function createMockSocket(
 ): MockSocket {
     return Helpers::createMockSocket($responses, $tlsSuccess);
 }
+
+it('normalises bare LF and bare CR line endings to CRLF before dot-stuffing', function (
+    string $content,
+    string $expected,
+): void {
+    $socket = createMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '354 Start mail input',
+        '250 OK',
+    ]);
+
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+    $transport->data($content);
+
+    expect($socket->written[1])->toBe($expected);
+})->with([
+    'bare LF' => ["Subject: Test\n\nline one\nline two", "Subject: Test\r\n\r\nline one\r\nline two\r\n.\r\n"],
+    'bare CR' => ["Subject: Test\r\rline", "Subject: Test\r\n\r\nline\r\n.\r\n"],
+    'mixed' => ["a\r\nb\nc\rd", "a\r\nb\r\nc\r\nd\r\n.\r\n"],
+]);
+
+it('dot-stuffs a line that follows a bare LF so it cannot end DATA early', function (): void {
+    $socket = createMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '354 Start mail input',
+        '250 OK',
+    ]);
+
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+    $transport->data("Subject: Test\r\n\r\nbody\n.\r\nMAIL FROM:<evil@example.com>");
+
+    $bodyWrite = $socket->written[1];
+
+    expect($bodyWrite)->toBe("Subject: Test\r\n\r\nbody\r\n..\r\nMAIL FROM:<evil@example.com>\r\n.\r\n")
+        ->and(substr_count($bodyWrite, "\r\n.\r\n"))->toBe(1)
+        ->and($bodyWrite)->not->toContain("\n.\r\n" . 'MAIL');
+});
+
+it('dot-stuffs a line that follows a bare CR', function (): void {
+    $socket = createMockSocket([
+        '220 smtp.example.com ESMTP ready',
+        '354 Start mail input',
+        '250 OK',
+    ]);
+
+    $transport = new SmtpTransport($socket);
+    $transport->connect('smtp.example.com', 587);
+    $transport->data("body\r.hidden");
+
+    expect($socket->written[1])->toBe("body\r\n..hidden\r\n.\r\n");
+});

@@ -144,7 +144,9 @@ class SmtpTransport
     private function dotStuff(
         string $content,
     ): string {
-        $lines = explode("\r\n", $content);
+        // Normalise bare CR and bare LF to CRLF first, so a line after a lone "\n" is stuffed too;
+        // lenient MTAs treat "\n.\r\n" as end-of-data (SMTP smuggling).
+        $lines = explode("\n", strtr($content, ["\r\n" => "\n", "\r" => "\n"]));
 
         foreach ($lines as &$line) {
             if (str_starts_with($line, '.')) {

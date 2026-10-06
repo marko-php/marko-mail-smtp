@@ -1019,3 +1019,70 @@ class SmtpMockSocket implements SocketInterface
         $this->connected = false;
     }
 }
+
+/**
+ * @return string The DATA payload for a text message carrying one attachment with the given name
+ */
+function sentPayloadWithAttachmentNamed(
+    string $name,
+): string {
+    $tempFile = tempnam(sys_get_temp_dir(), 'marko-attachment-');
+
+    try {
+        file_put_contents($tempFile, 'data');
+
+        return sentDataPayload(
+            Message::create()
+                ->from('sender@example.com')
+                ->to('recipient@example.com')
+                ->text('See attached.')
+                ->attach($tempFile, $name, 'text/plain'),
+        );
+    } finally {
+        unlink($tempFile);
+    }
+}
+
+it('quotes a plain ASCII attachment filename and escapes quotes and backslashes', function (
+    string $name,
+    string $expected,
+): void {
+    expect(sentPayloadWithAttachmentNamed($name))
+        ->toContain("Content-Disposition: attachment; $expected\r\n");
+})->with([
+    'plain name' => ['report.txt', 'filename="report.txt"'],
+    'double quote' => ['a".txt; size=1', 'filename="a\".txt; size=1"'],
+    'backslash' => ['dir\\file.txt', 'filename="dir\\\\file.txt"'],
+]);
+
+it('encodes a non-ASCII attachment filename with RFC 2231', function (): void {
+    expect(sentPayloadWithAttachmentNamed('archivo español "v2".txt'))->toContain(
+        "Content-Disposition: attachment; filename*=UTF-8''archivo%20espa%C3%B1ol%20%22v2%22.txt\r\n",
+    );
+});
+
+it('encodes an attachment filename containing control characters with RFC 2231', function (): void {
+    expect(sentPayloadWithAttachmentNamed("tab\tname.txt"))->toContain(
+        "Content-Disposition: attachment; filename*=UTF-8''tab%09name.txt\r\n",
+    );
+});
+
+it('encodes an inline attachment filename the same way as a regular one', function (): void {
+    $tempImage = tempnam(sys_get_temp_dir(), 'marko-inline-');
+
+    try {
+        file_put_contents($tempImage, 'png');
+
+        $message = Message::create()
+            ->from('sender@example.com')
+            ->to('recipient@example.com')
+            ->html('<img src="cid:logo" alt="">')
+            ->embed($tempImage, 'logo', 'lögo.png', 'image/png');
+
+        expect(sentDataPayload($message))->toContain(
+            "Content-Disposition: inline; filename*=UTF-8''l%C3%B6go.png\r\n",
+        );
+    } finally {
+        unlink($tempImage);
+    }
+});
