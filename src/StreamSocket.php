@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Marko\Mail\Smtp;
 
+use Marko\Core\Support\ErrorCapture;
 use Marko\Mail\Exception\TransportException;
 
 class StreamSocket implements SocketInterface
 {
     /** @var resource|null */
     protected mixed $stream = null;
+
+    protected ?string $host = null;
 
     public bool $connected {
         get => $this->stream !== null;
@@ -33,18 +36,27 @@ class StreamSocket implements SocketInterface
         $errno = 0;
         $errstr = '';
 
-        $stream = @stream_socket_client(
-            address: $address,
-            error_code: $errno,
-            error_message: $errstr,
-            timeout: $timeout,
+        // stream_socket_client() reports the OS reason both through $errstr and as a
+        // PHP warning; capture the warning so it is not emitted, and fall back to it
+        // when $errstr is empty (e.g. a failure before the socket is created).
+        $stream = ErrorCapture::run(
+            $reason,
+            function () use ($address, $timeout, &$errno, &$errstr): mixed {
+                return stream_socket_client(
+                    address: $address,
+                    error_code: $errno,
+                    error_message: $errstr,
+                    timeout: $timeout,
+                );
+            },
         );
 
         if ($stream === false) {
-            throw TransportException::connectionFailed($host, $port);
+            throw TransportException::connectionFailed($host, $port, $errstr !== '' ? $errstr : $reason);
         }
 
         $this->stream = $stream;
+        $this->host = $host;
     }
 
     public function read(): string
@@ -88,7 +100,9 @@ class StreamSocket implements SocketInterface
     }
 
     /**
-     * @throws TransportException
+     * Returns false when there is no open connection.
+     *
+     * @throws TransportException When the TLS handshake fails, with the OpenSSL reason
      */
     public function enableTls(): bool
     {
@@ -96,13 +110,20 @@ class StreamSocket implements SocketInterface
             return false;
         }
 
-        $result = stream_socket_enable_crypto(
-            socket: $this->stream,
-            enable: true,
-            crypto_method: STREAM_CRYPTO_METHOD_TLS_CLIENT,
+        $result = ErrorCapture::run(
+            $reason,
+            fn (): bool|int => stream_socket_enable_crypto(
+                stream: $this->stream,
+                enable: true,
+                crypto_method: STREAM_CRYPTO_METHOD_TLS_CLIENT,
+            ),
         );
 
-        return $result === true;
+        if ($result !== true) {
+            throw TransportException::tlsFailed($this->host ?? 'unknown host', $reason);
+        }
+
+        return true;
     }
 
     public function close(): void
@@ -110,6 +131,7 @@ class StreamSocket implements SocketInterface
         if ($this->stream !== null) {
             fclose($this->stream);
             $this->stream = null;
+            $this->host = null;
         }
     }
 }
